@@ -397,7 +397,7 @@ int main(int argc, char **argv) {
     if (argc < 3) { printf("Usage: progname <kolibri.img> <destFolder>"); return -1; }
     imageFile = argv[1];
     strcpy(outputFolder, argv[2]);
-    if (!fat12Open(fat12, "kolibri.img")) { return handleError(fat12); }
+    if (!fat12Open(fat12, imageFile)) { return handleError(fat12); }
     handleRootFolder(fat12);
     free(fat12);
     puts("DONE!");
