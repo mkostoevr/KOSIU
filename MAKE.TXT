@@ -1,0 +1,1 @@
+tcc /usbhd0/1/rss/frontend/kolibrios/main.c -lck -Iinclude -D_KOS32
