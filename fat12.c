@@ -188,55 +188,53 @@ static int handleFolder(Fat12 *this, int claster) {
 
         for (int i = 0; this->image[offset + 32 * i + 0] &&
             i < (this->bytesPerSector * this->sectorsPerClaster / 32); i++) {
-            if ((this->image[offset + 32 * i + 11] & 0x0f) != 0x0f) {
-                int nameSize = 0;
-                char *name = NULL;
+            int nameSize = 0;
+            char *name = NULL;
 
-                nameSize = getItemNameSize(&this->image[offset + 32 * i]);
-                if (nameSize != 0) {
-                    name = malloc(nameSize);
-                    getItemName(&this->image[offset + 32 * i], name);
-                    // handle folder if it isn't current folder or parent one
-                    if ((this->image[offset + 32 * i + 11] & 0x10) &&
-                        memcmp(&this->image[offset + 32 * i], ".          ", 11) &&
-                        memcmp(&this->image[offset + 32 * i], "..         ", 11)) {
+            nameSize = getItemNameSize(&this->image[offset + 32 * i]);
+            if (nameSize != 0) {
+                name = malloc(nameSize);
+                getItemName(&this->image[offset + 32 * i], name);
+                // handle folder if it isn't current folder or parent one
+                if ((this->image[offset + 32 * i + 11] & 0x10) &&
+                    memcmp(&this->image[offset + 32 * i], ".          ", 11) &&
+                    memcmp(&this->image[offset + 32 * i], "..         ", 11)) {
+                    size_t oldStringEnd = strlen(outputFolder);
+
+                    strcat(outputFolder, "/");
+                    strcat(outputFolder, name);
+                    if (!handleFolder(this, getOffsetByClaster(this, 
+                        get16(this->image, offset + 32 * i + 26)))
+                    ) { 
+                        return 0; 
+                    }
+                    outputFolder[oldStringEnd] = '\0';
+                } else if (memcmp(&this->image[offset + 32 * i], ".          ", 11) &&
+                    memcmp(&this->image[offset + 32 * i], "..         ", 11)) {
+                    void *buffer = NULL;
+                    int size = get32(this->image, offset + 32 * i + 28);
+                    int cluster = get16(this->image, offset + 32 * i + 26);
+
+                    buffer = malloc(size);
+                    if (!getFile(this, buffer, size, cluster))
+                        { return 0; }
+                    {
                         size_t oldStringEnd = strlen(outputFolder);
+                        FILE *fp = NULL;
 
+                        createFolders(outputFolder);
                         strcat(outputFolder, "/");
                         strcat(outputFolder, name);
-                        if (!handleFolder(this, getOffsetByClaster(this, 
-                            get16(this->image, offset + 32 * i + 26)))
-                        ) { 
-                            return 0; 
-                        }
+                        con_printf("Extracting %s\n", outputFolder);
+                        fp = fopen(outputFolder, "wb");
+                        if (!fp) { perror(NULL); }
+                        fwrite(buffer, 1, size, fp);
+                        fclose(fp);
                         outputFolder[oldStringEnd] = '\0';
-                    } else if (memcmp(&this->image[offset + 32 * i], ".          ", 11) &&
-                        memcmp(&this->image[offset + 32 * i], "..         ", 11)) {
-                        void *buffer = NULL;
-                        int size = get32(this->image, offset + 32 * i + 28);
-                        int cluster = get16(this->image, offset + 32 * i + 26);
-
-                        buffer = malloc(size);
-                        if (!getFile(this, buffer, size, cluster))
-                            { return 0; }
-                        {
-                            size_t oldStringEnd = strlen(outputFolder);
-                            FILE *fp = NULL;
-
-                            createFolders(outputFolder);
-                            strcat(outputFolder, "/");
-                            strcat(outputFolder, name);
-                            con_printf("Extracting %s\n", outputFolder);
-                            fp = fopen(outputFolder, "wb");
-                            if (!fp) { perror(NULL); }
-                            fwrite(buffer, 1, size, fp);
-                            fclose(fp);
-                            outputFolder[oldStringEnd] = '\0';
-                        }
-                        free(buffer);
                     }
-                    free(name);
+                    free(buffer);
                 }
+                free(name);
             }
         }
     }
