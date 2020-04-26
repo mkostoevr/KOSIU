@@ -3,74 +3,55 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <conio.h>
 
-#include "fat12.h"
+typedef struct {
+    char *image;
+    int imageSize;
+    char *errorMessage;
+    int bytesPerSector;
+    int sectorsPerClaster;
+    int reservedSectorCount;
+    int numberOfFats;
+    int maxRootEntries;
+    int totalSectors;
+    int sectorsPerFat;
+    int firstFat;
+    int rootDirectory;
+    int dataRegion;
+} Fat12;
 
-char *imageFile;
-char outputFolder[4096];
+static char *imageFile;
+static char outputFolder[4096];
 
+// system-dependent
+static void createFolder(const char *name);
+// system-independent
+static void createFolders(const char *_name);
 static uint16_t get16(void *_from, int index);
 static uint32_t get32(void *_from, int index);
+static int getNextClaster(Fat12 *this, int currentClaster);
+static int getFile(Fat12 *this, void *_buffer, int size, int claster);
 static int getOffsetByClaster(Fat12 *this, int claster);
-static int handleFolder(Fat12 *this, int offset);
+static int getItemNameSize(void *_folderEntry);
+static void getItemName(void *_folderEntry, void *_name);
+static int handleFolder(Fat12 *this, int claster);
 static int handleRootFolder(Fat12 *this);
-static int fat12Error(Fat12 *this, int errorCode);
-static void DumpHex(const void* data, size_t size);
-static void log(char *file, int line, char *format_string, ...);
+static int fat12Open(Fat12 *this, const char *img);
+static int fat12Error(Fat12 *this, char *errorMessage);
 
-const char *errorStrings[] = {
-    "Success",
-    "Can't open image file",
-    "Can't allocate memory for image",
-};
-
-static void DumpHex(const void* data, size_t size) {
-        char ascii[17];
-        size_t i, j;
-
-        ascii[16] = '\0';
-        for (i = 0; i < size; ++i) {
-                printf("%02X ", ((unsigned char*)data)[i]);
-                if (((unsigned char*)data)[i] >= ' ' && ((unsigned char*)data)[i] <= '~') {
-                        ascii[i % 16] = ((unsigned char*)data)[i];
-                } else {
-                        ascii[i % 16] = '.';
-                }
-                if ((i+1) % 8 == 0 || i+1 == size) {
-                        printf(" ");
-                        if ((i+1) % 16 == 0) {
-                                printf("|  %s \n", ascii);
-                        } else if (i+1 == size) {
-                                ascii[(i+1) % 16] = '\0';
-                                if ((i+1) % 16 <= 8) {
-                                        printf(" ");
-                                }
-                                for (j = (i+1) % 16; j < 16; ++j) {
-                                        printf("   ");
-                                }
-                                printf("|  %s \n", ascii);
-                        }
-                }
-        }
-}
-
-//#include <windows.h>
-#include <kos32sys1.h>
-
-void createFolder(const char *name) {
-        struct {
-                int fn;
-                int fuck[4];
-                char b;
-                const char *path __attribute__((packed));
-        } info;
+static void createFolder(const char *name) {
+    struct {
+        int fn;
+        int fuck[4];
+        char b;
+        const char *path __attribute__((packed));
+    } info;
     memset(&info, 0, sizeof(info));
-        info.fn = 9;
-        info.b = 0;
-        info.path = name;
-        int res = 99;
-        asm volatile ("int $0x40":"=a"(res):"a"(70), "b"(&info));
-    if (res != 0) { log(__FILE__, __LINE__, "createFolder: #%d\n", res); }
+    info.fn = 9;
+    info.b = 0;
+    info.path = name;
+    asm volatile ("int $0x40"::"a"(70), "b"(&info));
 }
 
 static void createFolders(const char *_name) {
@@ -82,30 +63,12 @@ static void createFolders(const char *_name) {
         if (ptr != name) { *ptr = '/'; }
         ptr = strchr(ptr + 1, '/');
         if (ptr) { *ptr = 0; }
-        //CreateDirectoryA(name, NULL);
-        //puts(name);
         createFolder(name);
     }
 }
 
-static void log(char *file, int line, char *format_string, ...) {
-    va_list args;
-    if (file) {
-        if (!line) { line = -1; }
-        printf("`%s`:%d: ", file, line);
-    }
-    va_start(args, format_string);
-    vfprintf(stderr, format_string, args);
-    va_end(args);
-}
-
-size_t fat12Size() {
-    return sizeof(Fat12);
-}
-
 static uint32_t get32(void *_from, int index) {
     uint8_t *from = _from;
-
     return from[index] |
         (from[index + 1] << 8) |
         (from[index + 2] << 16) |
@@ -129,25 +92,25 @@ static int getNextClaster(Fat12 *this, int currentClaster) {
 }
 
 static int getFile(Fat12 *this, void *_buffer, int size, int claster) {
-    void *clasterPtr = NULL;
     int offset = 0;
     char *buffer = _buffer;
 
     while (claster < 0xff7) {
         int toCopy = this->bytesPerSector * this->sectorsPerClaster;
+        void *clasterPtr = &this->image[getOffsetByClaster(this, claster)];
 
-        clasterPtr = &this->image[this->dataRegion + (claster - 2) * this->bytesPerSector * this->sectorsPerClaster];
         claster = getNextClaster(this, claster);
+        // if next claster is END OF FILE claster, copy only rest of file
         if (claster >= 0xff7) { toCopy = size % toCopy; }
         memcpy(&buffer[offset], clasterPtr, toCopy);
         offset += toCopy;
     }
-    clasterPtr = &this->image[this->dataRegion + (claster - 2) * this->bytesPerSector * this->sectorsPerClaster];
     return 1;
 }
 
 static int getOffsetByClaster(Fat12 *this, int claster) {
-    return this->dataRegion + (claster - 2) * this->bytesPerSector * this->sectorsPerClaster;
+    return this->dataRegion + (claster - 2) 
+        * this->bytesPerSector * this->sectorsPerClaster;
 }
 
 static int getItemNameSize(void *_folderEntry) {
@@ -241,8 +204,11 @@ static int handleFolder(Fat12 *this, int claster) {
 
                         strcat(outputFolder, "/");
                         strcat(outputFolder, name);
-                        if (!handleFolder(this, getOffsetByClaster(this, get16(this->image, offset + 32 * i + 26))))
-                            { return 0; }
+                        if (!handleFolder(this, getOffsetByClaster(this, 
+                            get16(this->image, offset + 32 * i + 26)))
+                        ) { 
+                            return 0; 
+                        }
                         outputFolder[oldStringEnd] = '\0';
                     } else if (memcmp(&this->image[offset + 32 * i], ".          ", 11) &&
                         memcmp(&this->image[offset + 32 * i], "..         ", 11)) {
@@ -260,7 +226,7 @@ static int handleFolder(Fat12 *this, int claster) {
                             createFolders(outputFolder);
                             strcat(outputFolder, "/");
                             strcat(outputFolder, name);
-                            log(NULL, 0, "Extracting \"%s\"...\n", outputFolder);
+                            con_printf("Extracting %s\n", outputFolder);
                             fp = fopen(outputFolder, "wb");
                             if (!fp) { perror(NULL); }
                             fwrite(buffer, 1, size, fp);
@@ -310,7 +276,7 @@ static int handleRootFolder(Fat12 *this) {
                     createFolders(outputFolder);
                     strcat(outputFolder, "/");
                     strcat(outputFolder, name);
-                    log(NULL, 0, "Extracting \"%s\"...\n", outputFolder);
+                    con_printf("Extracting %s\n", outputFolder);
                     fp = fopen(outputFolder, "wb");
                     if (!fp) { perror(NULL); }
                     fwrite(buffer, 1, size, fp);
@@ -325,15 +291,18 @@ static int handleRootFolder(Fat12 *this) {
     return 1;
 }
 
-int fat12Open(Fat12 *this, const char *img) {
+static int fat12Open(Fat12 *this, const char *img) {
     FILE *fp = NULL;
 
-    if (!(fp = fopen(img, "rb"))) { return fat12Error(this, FAT12_ERROR_CAN_NOT_OPEN_IMAGE_FILE); }
+    if (!(fp = fopen(img, "rb"))) { 
+        return fat12Error(this, "Can't open imput file"); 
+    }
     fseek(fp, 0, SEEK_END);
     this->imageSize = ftell(fp);
     rewind(fp);
-    if (!(this->image = malloc(this->imageSize)))
-        { return fat12Error(this, FAT12_ERROR_CAN_NOT_ALLOCATE_MEMORY_FOR_IMAGE); }
+    if (!(this->image = malloc(this->imageSize))) { 
+        return fat12Error(this, "Can't allocate memory for image"); 
+    }
     fread(this->image, 1, this->imageSize, fp);
     fclose(fp);
     this->bytesPerSector = *(uint16_t *)((uintptr_t)this->image + 11);
@@ -342,63 +311,63 @@ int fat12Open(Fat12 *this, const char *img) {
     this->numberOfFats = *(uint8_t *)((uintptr_t)this->image + 0x10);
     this->maxRootEntries = *(uint16_t *)((uintptr_t)this->image + 0x11);
     this->totalSectors = *(uint16_t *)((uintptr_t)this->image + 0x13);
-    if (!this->totalSectors)
-        { this->totalSectors = *(uint32_t *)((uintptr_t)this->image + 0x20); }
+    if (!this->totalSectors) { 
+        this->totalSectors = *(uint32_t *)((uintptr_t)this->image + 0x20); 
+    }
     this->sectorsPerFat = *(uint16_t *)((uintptr_t)this->image + 0x16);
     this->firstFat = (0 + this->reservedSectorCount) * this->bytesPerSector;
-    this->rootDirectory = this->firstFat + this->numberOfFats * this->sectorsPerFat * this->bytesPerSector;
+    this->rootDirectory = this->firstFat + this->numberOfFats 
+        * this->sectorsPerFat * this->bytesPerSector;
     this->dataRegion = this->rootDirectory + this->maxRootEntries * 32;
-    log(NULL, 0, "Bytes per sector: %d\n", this->bytesPerSector);
-    log(NULL, 0, "Sectors per claster: %d\n", this->sectorsPerClaster);
-    log(NULL, 0, "Reserver sector count: %d\n", this->reservedSectorCount);
-    log(NULL, 0, "Number of FATs: %d\n", this->numberOfFats);
-    log(NULL, 0, "Max root entries: %d\n", this->maxRootEntries);
-    log(NULL, 0, "Total sectors: %d\n", this->totalSectors);
-    log(NULL, 0, "Sectors per FAT: %d\n", this->sectorsPerFat);
-    log(NULL, 0, "First FAT: %d\n", this->firstFat);
-    log(NULL, 0, "Root directory: %d\n", this->rootDirectory);
-    log(NULL, 0, "Data region: %d\n", this->dataRegion);
+    con_printf("Bytes per sector: %d\n",      this->bytesPerSector);
+    con_printf("Sectors per claster: %d\n",   this->sectorsPerClaster);
+    con_printf("Reserver sector count: %d\n", this->reservedSectorCount);
+    con_printf("Number of FATs: %d\n",        this->numberOfFats);
+    con_printf("Max root entries: %d\n",      this->maxRootEntries);
+    con_printf("Total sectors: %d\n",         this->totalSectors);
+    con_printf("Sectors per FAT: %d\n",       this->sectorsPerFat);
+    con_printf("First FAT: %d\n",             this->firstFat);
+    con_printf("Root directory: %d\n",        this->rootDirectory);
+    con_printf("Data region: %d\n",           this->dataRegion);
     return 1;
 }
 
-size_t fat12GetErrorStringSize(Fat12 *this) {
-    if (this->errorCode < (sizeof(errorStrings) / sizeof(errorStrings[0]))) {
-        return strlen(errorStrings[this->errorCode]) + 1;
-    } else {
-        return strlen("Invalid error code.") + 1;
-    }
-}
-
-void fat12GenErrorString(Fat12 *this, char *errorString) {
-    if (this->errorCode < (sizeof(errorStrings) / sizeof(errorStrings[0]))) {
-        strcpy(errorString, errorStrings[this->errorCode]);
-    } else {
-        strcpy(errorString, "Invalid error code.");
-    }
-}
-
-static int fat12Error(Fat12 *this, int errorCode) {
-    this->errorCode = errorCode;
+static int fat12Error(Fat12 *this, char *errorMessage) {
+    this->errorMessage = errorMessage;
     return 0;
 }
 
 static int handleError(Fat12 *fat12) {
-    char *errorMessage = malloc(fat12GetErrorStringSize(fat12));
-
-    fat12GenErrorString(fat12, errorMessage);
-    printf("Error in Fat12: %s\n", errorMessage);
-    free(errorMessage);
-    return fat12->errorCode;
+    printf("Error in Fat12: %s\n", fat12->errorMessage);
+    return -1;
 }
 
-int main(int argc, char **argv) {
-    Fat12 *fat12 = malloc(fat12Size());
 
-    if (argc < 3) { printf("Usage: progname <kolibri.img> <destFolder>"); return -1; }
+
+
+int main(int argc, char **argv) {
+    Fat12 *fat12 = malloc(sizeof(Fat12));
+
+    if (con_init_console_dll()) return -1;
+    con_set_title("UnImg - kolibri.img file unpacker");
+
+    if (argc < 2) { 
+        con_write_asciiz("Usage: unimg \"/path/to/kolibri.img\" \"/optional/extract/path\""); 
+        con_exit(0);
+        return -1;
+    }
+    
     imageFile = argv[1];
-    strcpy(outputFolder, argv[2]);
-    if (!fat12Open(fat12, imageFile)) { return handleError(fat12); }
+
+    if (argc >= 3) strcpy(outputFolder, argv[2]);
+    else strcpy(outputFolder, "/TMP0/1/KOLIBRI.IMG");
+
+    if (!fat12Open(fat12, imageFile)) { 
+        return handleError(fat12); 
+    }
+
     handleRootFolder(fat12);
     free(fat12);
-    puts("DONE!");
+    con_write_asciiz("\nDONE!\n\n");
+    con_exit(0);
 }
