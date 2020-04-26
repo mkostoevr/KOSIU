@@ -182,59 +182,67 @@ static void getItemName(void *_folderEntry, void *_name) {
     }
 }
 
+static int handleFolderEntry(Fat12 *this, int folderEntryOffset) {
+    int nameSize = 0;
+    char *name = NULL;
+
+    if (!this->image[folderEntryOffset]) { return 1; }
+    nameSize = getItemNameSize(&this->image[folderEntryOffset]);
+    if (nameSize != 0) {
+        name = malloc(nameSize);
+        getItemName(&this->image[folderEntryOffset], name);
+        if ((this->image[folderEntryOffset + 11] & 0x10)) {
+            // handle folder only if it isn't current folder or parent one
+            if (memcmp(&this->image[folderEntryOffset], ".          ", 11) &&
+                memcmp(&this->image[folderEntryOffset], "..         ", 11)) {
+                size_t oldStringEnd = strlen(outputFolder);
+
+                strcat(outputFolder, "/");
+                strcat(outputFolder, name);
+                if (!handleFolder(this, get16(this->image, folderEntryOffset + 26))) {
+                    free(name);
+                    return 0;
+                }
+                outputFolder[oldStringEnd] = '\0';
+            }
+        } else {
+            void *buffer = NULL;
+            int size = get32(this->image, folderEntryOffset + 28);
+            int cluster = get16(this->image, folderEntryOffset + 26);
+
+            buffer = malloc(size);
+            if (!getFile(this, buffer, size, cluster)) {
+                free(buffer);
+                return 0;
+            }
+            {
+                size_t oldStringEnd = strlen(outputFolder);
+                FILE *fp = NULL;
+
+                createFolders(outputFolder);
+                strcat(outputFolder, "/");
+                strcat(outputFolder, name);
+                con_printf("Extracting %s\n", outputFolder);
+                fp = fopen(outputFolder, "wb");
+                if (!fp) { perror(NULL); }
+                fwrite(buffer, 1, size, fp);
+                fclose(fp);
+                outputFolder[oldStringEnd] = '\0';
+            }
+            free(buffer);
+        }
+        free(name);
+    }
+    return 1;
+}
+
 static int handleFolder(Fat12 *this, int claster) {
     for (; claster < 0xff7; claster = getNextClaster(this, claster)) {
         int offset = getOffsetByClaster(this, claster);
 
-        for (int i = 0; this->image[offset + 32 * i + 0] &&
-            i < (this->bytesPerSector * this->sectorsPerClaster / 32); i++) {
-            int nameSize = 0;
-            char *name = NULL;
-
-            nameSize = getItemNameSize(&this->image[offset + 32 * i]);
-            if (nameSize != 0) {
-                name = malloc(nameSize);
-                getItemName(&this->image[offset + 32 * i], name);
-                // handle folder if it isn't current folder or parent one
-                if ((this->image[offset + 32 * i + 11] & 0x10) &&
-                    memcmp(&this->image[offset + 32 * i], ".          ", 11) &&
-                    memcmp(&this->image[offset + 32 * i], "..         ", 11)) {
-                    size_t oldStringEnd = strlen(outputFolder);
-
-                    strcat(outputFolder, "/");
-                    strcat(outputFolder, name);
-                    if (!handleFolder(this, getOffsetByClaster(this, 
-                        get16(this->image, offset + 32 * i + 26)))
-                    ) { 
-                        return 0; 
-                    }
-                    outputFolder[oldStringEnd] = '\0';
-                } else if (memcmp(&this->image[offset + 32 * i], ".          ", 11) &&
-                    memcmp(&this->image[offset + 32 * i], "..         ", 11)) {
-                    void *buffer = NULL;
-                    int size = get32(this->image, offset + 32 * i + 28);
-                    int cluster = get16(this->image, offset + 32 * i + 26);
-
-                    buffer = malloc(size);
-                    if (!getFile(this, buffer, size, cluster))
-                        { return 0; }
-                    {
-                        size_t oldStringEnd = strlen(outputFolder);
-                        FILE *fp = NULL;
-
-                        createFolders(outputFolder);
-                        strcat(outputFolder, "/");
-                        strcat(outputFolder, name);
-                        con_printf("Extracting %s\n", outputFolder);
-                        fp = fopen(outputFolder, "wb");
-                        if (!fp) { perror(NULL); }
-                        fwrite(buffer, 1, size, fp);
-                        fclose(fp);
-                        outputFolder[oldStringEnd] = '\0';
-                    }
-                    free(buffer);
-                }
-                free(name);
+        for (int i = 0; i < (this->bytesPerSector * this->sectorsPerClaster / 32); i++) {
+            if (!handleFolderEntry(this, offset + 32 * i)) {
+                return 0;
             }
         }
     }
@@ -243,47 +251,8 @@ static int handleFolder(Fat12 *this, int claster) {
 
 static int handleRootFolder(Fat12 *this) {
     for (int i = 0; i < this->maxRootEntries; i++) {
-        int nameSize = 0;
-        char *name = NULL;
-
-        if (!this->image[this->rootDirectory + 32 * i + 0]) { continue; }
-        nameSize = getItemNameSize(&this->image[this->rootDirectory + 32 * i + 0]);
-        if (nameSize != 0) {
-            name = malloc(nameSize);
-            getItemName(&this->image[this->rootDirectory + 32 * i], name);
-            if ((this->image[this->rootDirectory + 32 * i + 11] & 0x10)) {
-                size_t oldStringEnd = strlen(outputFolder);
-
-                strcat(outputFolder, "/");
-                strcat(outputFolder, name);
-                if (!handleFolder(this, get16(this->image, this->rootDirectory + 32 * i + 26)))
-                    { return 0; }
-                outputFolder[oldStringEnd] = '\0';
-            } else {
-                void *buffer = NULL;
-                int size = get32(this->image, this->rootDirectory + 32 * i + 28);
-                int cluster = get16(this->image, this->rootDirectory + 32 * i + 26);
-
-                buffer = malloc(size);
-                if (!getFile(this, buffer, size, cluster))
-                    { return 0; }
-                {
-                    size_t oldStringEnd = strlen(outputFolder);
-                    FILE *fp = NULL;
-
-                    createFolders(outputFolder);
-                    strcat(outputFolder, "/");
-                    strcat(outputFolder, name);
-                    con_printf("Extracting %s\n", outputFolder);
-                    fp = fopen(outputFolder, "wb");
-                    if (!fp) { perror(NULL); }
-                    fwrite(buffer, 1, size, fp);
-                    fclose(fp);
-                    outputFolder[oldStringEnd] = '\0';
-                }
-                free(buffer);
-            }
-            free(name);
+        if (!handleFolderEntry(this, this->rootDirectory + 32 * i)) {
+            return 0;
         }
     }
     return 1;
@@ -364,7 +333,10 @@ int main(int argc, char **argv) {
         return handleError(fat12); 
     }
 
-    handleRootFolder(fat12);
+    if (!handleRootFolder(fat12)) {
+        return handleError(fat12);
+    }
+
     free(fat12);
     con_write_asciiz("\nDONE!\n\n");
     con_exit(0);
