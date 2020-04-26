@@ -25,22 +25,23 @@ static char *imageFile;
 static char outputFolder[4096];
 
 // system-dependent
-static void createFolder(const char *name);
-// system-independent
-static void createFolders(const char *_name);
-static uint16_t get16(void *_from, int index);
-static uint32_t get32(void *_from, int index);
-static int getNextClaster(Fat12 *this, int currentClaster);
-static int getFile(Fat12 *this, void *_buffer, int size, int claster);
-static int getOffsetByClaster(Fat12 *this, int claster);
-static int getItemNameSize(void *_folderEntry);
-static void getItemName(void *_folderEntry, void *_name);
-static int handleFolder(Fat12 *this, int claster);
-static int handleRootFolder(Fat12 *this);
-static int fat12Open(Fat12 *this, const char *img);
-static int fat12Error(Fat12 *this, char *errorMessage);
+static void mkdir(const char *name);
+// misc
+static void mkdir_p(const char *_name); // create folder creating its parents
+static uint16_t get16(void *_from, int index); // get uint16_t from array at offset
+static uint32_t get32(void *_from, int index); // get uint32_t from array at offset
+// fat12
+static int fat12__getItemNameSize(void *_folderEntry);
+static void fat12__getItemName(void *_folderEntry, void *_name);
+static int fat12__getNextClaster(Fat12 *this, int currentClaster);
+static int fat12__getFile(Fat12 *this, void *_buffer, int size, int claster);
+static int fat12__getOffsetByClaster(Fat12 *this, int claster);
+static int fat12__handleFolder(Fat12 *this, int claster);
+static int fat12__handleRootFolder(Fat12 *this);
+static int fat12__open(Fat12 *this, const char *img);
+static int fat12__error(Fat12 *this, char *errorMessage);
 
-static void createFolder(const char *name) {
+static void mkdir(const char *name) {
     struct {
         int fn;
         int fuck[4];
@@ -54,7 +55,7 @@ static void createFolder(const char *name) {
     asm volatile ("int $0x40"::"a"(70), "b"(&info));
 }
 
-static void createFolders(const char *_name) {
+static void mkdir_p(const char *_name) {
     char *name = calloc(strlen(_name) + 1, 1);
 
     strcpy(name, _name);
@@ -63,7 +64,7 @@ static void createFolders(const char *_name) {
         if (ptr != name) { *ptr = '/'; }
         ptr = strchr(ptr + 1, '/');
         if (ptr) { *ptr = 0; }
-        createFolder(name);
+        mkdir(name);
     }
 }
 
@@ -81,7 +82,7 @@ static uint16_t get16(void *_from, int index) {
     return from[index] | (from[index + 1] << 8);
 }
 
-static int getNextClaster(Fat12 *this, int currentClaster) {
+static int fat12__getNextClaster(Fat12 *this, int currentClaster) {
     int nextClasterOffset = this->firstFat + currentClaster + (currentClaster >> 1);
 
     if (currentClaster % 2 == 0) {
@@ -91,15 +92,15 @@ static int getNextClaster(Fat12 *this, int currentClaster) {
     }
 }
 
-static int getFile(Fat12 *this, void *_buffer, int size, int claster) {
+static int fat12__getFile(Fat12 *this, void *_buffer, int size, int claster) {
     int offset = 0;
     char *buffer = _buffer;
 
     while (claster < 0xff7) {
         int toCopy = this->bytesPerSector * this->sectorsPerClaster;
-        void *clasterPtr = &this->image[getOffsetByClaster(this, claster)];
+        void *clasterPtr = &this->image[fat12__getOffsetByClaster(this, claster)];
 
-        claster = getNextClaster(this, claster);
+        claster = fat12__getNextClaster(this, claster);
         // if next claster is END OF FILE claster, copy only rest of file
         if (claster >= 0xff7) { toCopy = size % toCopy; }
         memcpy(&buffer[offset], clasterPtr, toCopy);
@@ -108,12 +109,12 @@ static int getFile(Fat12 *this, void *_buffer, int size, int claster) {
     return 1;
 }
 
-static int getOffsetByClaster(Fat12 *this, int claster) {
+static int fat12__getOffsetByClaster(Fat12 *this, int claster) {
     return this->dataRegion + (claster - 2) 
         * this->bytesPerSector * this->sectorsPerClaster;
 }
 
-static int getItemNameSize(void *_folderEntry) {
+static int fat12__getItemNameSize(void *_folderEntry) {
     uint8_t *folderEntry = _folderEntry;
 
     // Long File Name entry, not a file itself
@@ -124,7 +125,7 @@ static int getItemNameSize(void *_folderEntry) {
     return 13; // "NAME8888" '.' "EXT" '\x0'
 }
 
-static void getItemName(void *_folderEntry, void *_name) {
+static void fat12__getItemName(void *_folderEntry, void *_name) {
     uint8_t *folderEntry = _folderEntry;
     uint8_t *name = _name;
 
@@ -182,15 +183,15 @@ static void getItemName(void *_folderEntry, void *_name) {
     }
 }
 
-static int handleFolderEntry(Fat12 *this, int folderEntryOffset) {
+static int fat12__handleFolderEntry(Fat12 *this, int folderEntryOffset) {
     int nameSize = 0;
     char *name = NULL;
 
     if (!this->image[folderEntryOffset]) { return 1; }
-    nameSize = getItemNameSize(&this->image[folderEntryOffset]);
+    nameSize = fat12__getItemNameSize(&this->image[folderEntryOffset]);
     if (nameSize != 0) {
         name = malloc(nameSize);
-        getItemName(&this->image[folderEntryOffset], name);
+        fat12__getItemName(&this->image[folderEntryOffset], name);
         if ((this->image[folderEntryOffset + 11] & 0x10)) {
             // handle folder only if it isn't current folder or parent one
             if (memcmp(&this->image[folderEntryOffset], ".          ", 11) &&
@@ -199,7 +200,7 @@ static int handleFolderEntry(Fat12 *this, int folderEntryOffset) {
 
                 strcat(outputFolder, "/");
                 strcat(outputFolder, name);
-                if (!handleFolder(this, get16(this->image, folderEntryOffset + 26))) {
+                if (!fat12__handleFolder(this, get16(this->image, folderEntryOffset + 26))) {
                     free(name);
                     return 0;
                 }
@@ -211,7 +212,7 @@ static int handleFolderEntry(Fat12 *this, int folderEntryOffset) {
             int cluster = get16(this->image, folderEntryOffset + 26);
 
             buffer = malloc(size);
-            if (!getFile(this, buffer, size, cluster)) {
+            if (!fat12__getFile(this, buffer, size, cluster)) {
                 free(buffer);
                 return 0;
             }
@@ -219,7 +220,7 @@ static int handleFolderEntry(Fat12 *this, int folderEntryOffset) {
                 size_t oldStringEnd = strlen(outputFolder);
                 FILE *fp = NULL;
 
-                createFolders(outputFolder);
+                mkdir_p(outputFolder);
                 strcat(outputFolder, "/");
                 strcat(outputFolder, name);
                 con_printf("Extracting %s\n", outputFolder);
@@ -236,12 +237,12 @@ static int handleFolderEntry(Fat12 *this, int folderEntryOffset) {
     return 1;
 }
 
-static int handleFolder(Fat12 *this, int claster) {
-    for (; claster < 0xff7; claster = getNextClaster(this, claster)) {
-        int offset = getOffsetByClaster(this, claster);
+static int fat12__handleFolder(Fat12 *this, int claster) {
+    for (; claster < 0xff7; claster = fat12__getNextClaster(this, claster)) {
+        int offset = fat12__getOffsetByClaster(this, claster);
 
         for (int i = 0; i < (this->bytesPerSector * this->sectorsPerClaster / 32); i++) {
-            if (!handleFolderEntry(this, offset + 32 * i)) {
+            if (!fat12__handleFolderEntry(this, offset + 32 * i)) {
                 return 0;
             }
         }
@@ -249,26 +250,26 @@ static int handleFolder(Fat12 *this, int claster) {
     return 1;
 }
 
-static int handleRootFolder(Fat12 *this) {
+static int fat12__handleRootFolder(Fat12 *this) {
     for (int i = 0; i < this->maxRootEntries; i++) {
-        if (!handleFolderEntry(this, this->rootDirectory + 32 * i)) {
+        if (!fat12__handleFolderEntry(this, this->rootDirectory + 32 * i)) {
             return 0;
         }
     }
     return 1;
 }
 
-static int fat12Open(Fat12 *this, const char *img) {
+static int fat12__open(Fat12 *this, const char *img) {
     FILE *fp = NULL;
 
     if (!(fp = fopen(img, "rb"))) { 
-        return fat12Error(this, "Can't open imput file"); 
+        return fat12__error(this, "Can't open imput file"); 
     }
     fseek(fp, 0, SEEK_END);
     this->imageSize = ftell(fp);
     rewind(fp);
     if (!(this->image = malloc(this->imageSize))) { 
-        return fat12Error(this, "Can't allocate memory for image"); 
+        return fat12__error(this, "Can't allocate memory for image"); 
     }
     fread(this->image, 1, this->imageSize, fp);
     fclose(fp);
@@ -299,7 +300,7 @@ static int fat12Open(Fat12 *this, const char *img) {
     return 1;
 }
 
-static int fat12Error(Fat12 *this, char *errorMessage) {
+static int fat12__error(Fat12 *this, char *errorMessage) {
     this->errorMessage = errorMessage;
     return 0;
 }
@@ -329,11 +330,11 @@ int main(int argc, char **argv) {
     if (argc >= 3) strcpy(outputFolder, argv[2]);
     else strcpy(outputFolder, "/TMP0/1/KOLIBRI.IMG");
 
-    if (!fat12Open(fat12, imageFile)) { 
+    if (!fat12__open(fat12, imageFile)) { 
         return handleError(fat12); 
     }
 
-    if (!handleRootFolder(fat12)) {
+    if (!fat12__handleRootFolder(fat12)) {
         return handleError(fat12);
     }
 
