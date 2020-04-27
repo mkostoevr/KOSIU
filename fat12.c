@@ -128,15 +128,15 @@ static int fat12__getItemNameSize(void *_folderEntry) {
     // Long File Name entry, not a file itself
     if ((folderEntry[11] & 0x0f) == 0x0f) { return 0; }
     if ((folderEntry[11 - 32] & 0x0f) != 0x0f) {
-    // regular name 8 '.' 3 '\0'
-        int length = 13; // NAME888.EXT '\0'
+        // regular file "NAME8888" '.' "EXT" '\0'
+        int length = 13;
 
         for (int i = 10; folderEntry[i] == ' ' && i != 7; i--) { length--; }
         for (int i = 7; folderEntry[i] == ' ' && i != 0 - 1; i--) { length--; }
         if (folderEntry[8] == ' ') { length--; } // no ext - no'.'
         return length;
     } else {
-    // file with long name
+        // file with long name
         // format of Long File Name etries is described in fat12__getItemName
         int length = 1;
 
@@ -163,6 +163,7 @@ static int fat12__getItemNameSize(void *_folderEntry) {
             }
         }
     }
+    return 0; // WAT?
 }
 
 static void fat12__getItemName(void *_folderEntry, void *_name) {
@@ -225,7 +226,7 @@ static void fat12__getItemName(void *_folderEntry, void *_name) {
 
 
 static int fat12__forEachFile_handleFolderEntry(Fat12 *this, int folderEntryOffset, String *name,
-                                    ForEachCallback callback, void *callbackParam) {
+                                                ForEachCallback callback, void *callbackParam) {
     int nameSize = 0;
 
     if (this->image[folderEntryOffset] == 0) { return 1; } // zero-entry, not file nor folder
@@ -269,7 +270,7 @@ static int fat12__forEachFile_handleFolderEntry(Fat12 *this, int folderEntryOffs
 }
 
 static int fat12__forEachFile_handleFolder(Fat12 *this, int claster, String *name,
-                               ForEachCallback callback, void *callbackParam) {
+                                           ForEachCallback callback, void *callbackParam) {
     for (; claster < 0xff7; claster = fat12__getNextClaster(this, claster)) {
         int offset = fat12__getOffsetByClaster(this, claster);
 
@@ -364,9 +365,12 @@ static int callback(const char *name, size_t size, const uint8_t *data, void *pa
     { // don't let mkdir_p create folder where file should be located
         char *fileNameDelim = NULL;
     
-        if ((fileNameDelim = strrchr(outputPath->data, '/'))) { *fileNameDelim = '\0'; }
-        mkdir_p(outputPath->data);
-        if (fileNameDelim) { *fileNameDelim = '/'; }
+        // no slash = no folders to create, outputPath->data contains only file name
+        if ((fileNameDelim = strrchr(outputPath->data, '/'))) {
+            *fileNameDelim = '\0';
+            mkdir_p(outputPath->data);
+            *fileNameDelim = '/';
+        }
     }
     con_printf("Extracting \"%s\"\n", outputPath->data);
     if (!(fp = fopen(outputPath->data, "wb"))) { perror(NULL); }
