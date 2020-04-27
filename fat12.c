@@ -6,6 +6,12 @@
 #include <conio.h>
 
 typedef struct {
+    size_t length;
+    size_t capacity;
+    char *data;
+} String;
+
+typedef struct {
     char *image;
     int imageSize;
     char *errorMessage;
@@ -21,7 +27,7 @@ typedef struct {
     int dataRegion;
 } Fat12;
 
-static char outputFolder[4096];
+typedef int (*ItemEnumCallback)(const char *, size_t, const uint8_t *, void *);
 
 // system-dependent
 static void mkdir(const char *name);
@@ -35,15 +41,18 @@ static void fat12__getItemName(void *_folderEntry, void *_name);
 static int fat12__getNextClaster(Fat12 *this, int currentClaster);
 static int fat12__getFile(Fat12 *this, void *_buffer, int size, int claster);
 static int fat12__getOffsetByClaster(Fat12 *this, int claster);
-static int fat12__handleFolder(Fat12 *this, int claster);
-static int fat12__handleRootFolder(Fat12 *this);
+static int fat12__handleFolderEntry(Fat12 *this, int folderEntryOffset, String *name,
+                                    ItemEnumCallback callback, void *callbackParam);
+static int fat12__handleFolder(Fat12 *this, int claster, String *name,
+                               ItemEnumCallback callback, void *callbackParam);
+static int fat12__handleRootFolder(Fat12 *this, ItemEnumCallback callback, void *callbackParam);
 static int fat12__open(Fat12 *this, const char *img);
 static int fat12__error(Fat12 *this, char *errorMessage);
 
 static void mkdir(const char *name) {
     struct {
         int fn;
-        int fuck[4];
+        int unused[4];
         char b;
         const char *path __attribute__((packed));
     } info;
@@ -118,10 +127,42 @@ static int fat12__getItemNameSize(void *_folderEntry) {
 
     // Long File Name entry, not a file itself
     if ((folderEntry[11] & 0x0f) == 0x0f) { return 0; }
+    // regular name 8 '.' 3 '\0'
+    if ((folderEntry[11 - 32] & 0x0f) != 0x0f) {
+        int length = 13; // NAME888.EXT '\0'
+
+        for (int i = 10; folderEntry[i] == ' ' && i != 7; i--) { length--; }
+        for (int i = 7; folderEntry[i] == ' ' && i != 0 - 1; i--) { length--; }
+        if (folderEntry[8] == ' ') { length--; } // no ext - no'.'
+        return length;
     // file with long name
-    if ((folderEntry[11 - 32] & 0x0f) == 0x0f) { return 1024; }
-    // regular FAT12 file
-    return 13; // "NAME8888" '.' "EXT" '\x0'
+    } else {
+        // format of Long File Name etries is described in fat12__getItemName
+        int length = 1;
+
+        for (int i = 1; i < 255 / 13; i++) {
+            //! TODO: Add UTF-16 support
+            length += 13;
+            if (folderEntry[i * -32] & 0x40) {
+                // if first char from back is 0xffff, this is stub after name
+                // otherwice is last character, so we can return calculated length
+                if (get16(folderEntry, i * -32 + 30) == 0xffff) { length--; } else { return length; }
+                if (get16(folderEntry, i * -32 + 28) == 0xffff) { length--; } else { return length; }
+                if (get16(folderEntry, i * -32 + 24) == 0xffff) { length--; } else { return length; }
+                if (get16(folderEntry, i * -32 + 22) == 0xffff) { length--; } else { return length; }
+                if (get16(folderEntry, i * -32 + 20) == 0xffff) { length--; } else { return length; }
+                if (get16(folderEntry, i * -32 + 18) == 0xffff) { length--; } else { return length; }
+                if (get16(folderEntry, i * -32 + 16) == 0xffff) { length--; } else { return length; }
+                if (get16(folderEntry, i * -32 + 14) == 0xffff) { length--; } else { return length; }
+                if (get16(folderEntry, i * -32 + 9) == 0xffff) { length--; } else { return length; }
+                if (get16(folderEntry, i * -32 + 7) == 0xffff) { length--; } else { return length; }
+                if (get16(folderEntry, i * -32 + 5) == 0xffff) { length--; } else { return length; }
+                if (get16(folderEntry, i * -32 + 3) == 0xffff) { length--; } else { return length; }
+                if (get16(folderEntry, i * -32 + 1) == 0xffff) { length--; } else { return length; }
+                return length;
+            }
+        }
+    }
 }
 
 static void fat12__getItemName(void *_folderEntry, void *_name) {
@@ -182,30 +223,34 @@ static void fat12__getItemName(void *_folderEntry, void *_name) {
     }
 }
 
-static int fat12__handleFolderEntry(Fat12 *this, int folderEntryOffset) {
-    int nameSize = 0;
-    char *name = NULL;
 
-    if (!this->image[folderEntryOffset]) { return 1; }
-    nameSize = fat12__getItemNameSize(&this->image[folderEntryOffset]);
+static int fat12__handleFolderEntry(Fat12 *this, int folderEntryOffset, String *name,
+                                    ItemEnumCallback callback, void *callbackParam) {
+    int nameSize = 0;
+
+    if (this->image[folderEntryOffset] == 0) { return 1; } // zero-entry, not file nor folder
+    nameSize = fat12__getItemNameSize(&this->image[folderEntryOffset]); // includes sizeof '\0'
     if (nameSize != 0) {
-        name = malloc(nameSize);
-        fat12__getItemName(&this->image[folderEntryOffset], name);
+        while (name->capacity < name->length + nameSize + 1) {
+            name->capacity += name->capacity / 2;
+            name->data = realloc(name->data, name->capacity);
+        }
+        con_printf("Was %d (%d): %s\n", name->length, nameSize, name->data);
+        name->data[name->length++] = '/';
+        fat12__getItemName(&this->image[folderEntryOffset], &name->data[name->length]);
+        name->length += nameSize - 1;
+        con_printf("Becomt %d: %s\n", name->length, name->data);
         if ((this->image[folderEntryOffset + 11] & 0x10)) {
+            // the item is folder
             // handle folder only if it isn't current folder or parent one
             if (memcmp(&this->image[folderEntryOffset], ".          ", 11) &&
                 memcmp(&this->image[folderEntryOffset], "..         ", 11)) {
-                size_t oldStringEnd = strlen(outputFolder);
-
-                strcat(outputFolder, "/");
-                strcat(outputFolder, name);
-                if (!fat12__handleFolder(this, get16(this->image, folderEntryOffset + 26))) {
-                    free(name);
+                if (!fat12__handleFolder(this, get16(this->image, folderEntryOffset + 26), name, callback, callbackParam)) {
                     return 0;
                 }
-                outputFolder[oldStringEnd] = '\0';
             }
         } else {
+            // the item is a regular file
             void *buffer = NULL;
             int size = get32(this->image, folderEntryOffset + 28);
             int cluster = get16(this->image, folderEntryOffset + 26);
@@ -215,33 +260,23 @@ static int fat12__handleFolderEntry(Fat12 *this, int folderEntryOffset) {
                 free(buffer);
                 return 0;
             }
-            {
-                size_t oldStringEnd = strlen(outputFolder);
-                FILE *fp = NULL;
-
-                mkdir_p(outputFolder);
-                strcat(outputFolder, "/");
-                strcat(outputFolder, name);
-                con_printf("Extracting %s\n", outputFolder);
-                fp = fopen(outputFolder, "wb");
-                if (!fp) { perror(NULL); }
-                fwrite(buffer, 1, size, fp);
-                fclose(fp);
-                outputFolder[oldStringEnd] = '\0';
-            }
+            callback(name->data, size, buffer, callbackParam);
             free(buffer);
         }
-        free(name);
+        name->length -= nameSize - 1; // substract length of current item name
+        name->length--; // substract length of '/'
+        name->data[name->length] = '\0';
     }
     return 1;
 }
 
-static int fat12__handleFolder(Fat12 *this, int claster) {
+static int fat12__handleFolder(Fat12 *this, int claster, String *name,
+                               ItemEnumCallback callback, void *callbackParam) {
     for (; claster < 0xff7; claster = fat12__getNextClaster(this, claster)) {
         int offset = fat12__getOffsetByClaster(this, claster);
 
         for (int i = 0; i < (this->bytesPerSector * this->sectorsPerClaster / 32); i++) {
-            if (!fat12__handleFolderEntry(this, offset + 32 * i)) {
+            if (!fat12__handleFolderEntry(this, offset + 32 * i, name, callback, callbackParam)) {
                 return 0;
             }
         }
@@ -249,12 +284,21 @@ static int fat12__handleFolder(Fat12 *this, int claster) {
     return 1;
 }
 
-static int fat12__handleRootFolder(Fat12 *this) {
+static int fat12__handleRootFolder(Fat12 *this, ItemEnumCallback callback, void *callbackParam) {
+    String name = { 0 };
+
+    name.capacity = 4096;
+    name.data = malloc(name.capacity);
+    name.length = 0;
+    name.data[0] = '\0';
+
     for (int i = 0; i < this->maxRootEntries; i++) {
-        if (!fat12__handleFolderEntry(this, this->rootDirectory + 32 * i)) {
+        if (!fat12__handleFolderEntry(this, this->rootDirectory + 32 * i, &name, callback, callbackParam)) {
+            free(name.data);
             return 0;
         }
     }
+    free(name.data);
     return 1;
 }
 
@@ -310,12 +354,37 @@ static int handleError(Fat12 *fat12) {
     return -1;
 }
 
+static int callback(const char *name, size_t size, const uint8_t *data, void *param) {
+    FILE *fp = NULL;
+    String *outputPath = param;
+
+    while (outputPath->capacity < outputPath->length + strlen(name) + 1 + 1) {
+        outputPath->capacity += outputPath->capacity / 2;
+        outputPath->data = realloc(outputPath->data, outputPath->capacity);
+    }
+    strcat(outputPath->data, name);
+    { // don't let mkdir_p create folder where file should be located
+        char *fileNameDelim = NULL;
+    
+        if ((fileNameDelim = strrchr(outputPath->data, '/'))) { *fileNameDelim = '\0'; }
+        mkdir_p(outputPath->data);
+        if (fileNameDelim) { *fileNameDelim = '/'; }
+    }
+    con_printf("Extracting \"%s\"\n", outputPath->data);
+    if (!(fp = fopen(outputPath->data, "wb"))) { perror(NULL); }
+    fwrite(data, 1, size, fp);
+    fclose(fp);
+    outputPath->data[outputPath->length] = '\0';
+    return 0;
+}
+
 
 
 
 int main(int argc, char **argv) {
     Fat12 fat12 = { 0 };
-    static char *imageFile = NULL;
+    char *imageFile = NULL;
+    String outputFolder = { 0 };
 
     if (con_init_console_dll()) return -1;
     con_set_title("UnImg - kolibri.img file unpacker");
@@ -328,14 +397,20 @@ int main(int argc, char **argv) {
     
     imageFile = argv[1];
 
-    if (argc >= 3) strcpy(outputFolder, argv[2]);
-    else strcpy(outputFolder, "/TMP0/1/KOLIBRI.IMG");
+    outputFolder.capacity = 4096;
+    outputFolder.data = malloc(outputFolder.capacity);
+
+    //! ACHTUNG: possible buffer overflow, is 4096 enough in KolibriOS?
+    if (argc >= 3) strcpy(outputFolder.data, argv[2]);
+    else strcpy(outputFolder.data, "/TMP0/1/KOLIBRI.IMG");
+    
+    outputFolder.length = strlen(outputFolder.data);
 
     if (!fat12__open(&fat12, imageFile)) { 
         return handleError(&fat12); 
     }
 
-    if (!fat12__handleRootFolder(&fat12)) {
+    if (!fat12__handleRootFolder(&fat12, callback, &outputFolder)) {
         return handleError(&fat12);
     }
 
