@@ -235,11 +235,9 @@ static int fat12__forEachFile_handleFolderEntry(Fat12 *this, int folderEntryOffs
             name->capacity += name->capacity / 2;
             name->data = realloc(name->data, name->capacity);
         }
-        con_printf("Was %d (%d): %s\n", name->length, nameSize, name->data);
         name->data[name->length++] = '/';
         fat12__getItemName(&this->image[folderEntryOffset], &name->data[name->length]);
         name->length += nameSize - 1;
-        con_printf("Becomt %d: %s\n", name->length, name->data);
         if ((this->image[folderEntryOffset + 11] & 0x10)) {
             // the item is folder
             // handle folder only if it isn't current folder or parent one
