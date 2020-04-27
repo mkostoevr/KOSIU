@@ -27,7 +27,7 @@ typedef struct {
     int dataRegion;
 } Fat12;
 
-typedef int (*ItemEnumCallback)(const char *, size_t, const uint8_t *, void *);
+typedef int (*ForEachCallback)(const char *, size_t, const uint8_t *, void *);
 
 // system-dependent
 static void mkdir(const char *name);
@@ -41,11 +41,11 @@ static void fat12__getItemName(void *_folderEntry, void *_name);
 static int fat12__getNextClaster(Fat12 *this, int currentClaster);
 static int fat12__getFile(Fat12 *this, void *_buffer, int size, int claster);
 static int fat12__getOffsetByClaster(Fat12 *this, int claster);
-static int fat12__handleFolderEntry(Fat12 *this, int folderEntryOffset, String *name,
-                                    ItemEnumCallback callback, void *callbackParam);
-static int fat12__handleFolder(Fat12 *this, int claster, String *name,
-                               ItemEnumCallback callback, void *callbackParam);
-static int fat12__handleRootFolder(Fat12 *this, ItemEnumCallback callback, void *callbackParam);
+static int fat12__forEachFile_handleFolderEntry(Fat12 *this, int folderEntryOffset, String *name,
+                                                ForEachCallback callback, void *callbackParam);
+static int fat12__forEachFile_handleFolder(Fat12 *this, int claster, String *name,
+                                           ForEachCallback callback, void *callbackParam);
+static int fat12__forEachFile(Fat12 *this, ForEachCallback callback, void *callbackParam);
 static int fat12__open(Fat12 *this, const char *img);
 static int fat12__error(Fat12 *this, char *errorMessage);
 
@@ -127,16 +127,16 @@ static int fat12__getItemNameSize(void *_folderEntry) {
 
     // Long File Name entry, not a file itself
     if ((folderEntry[11] & 0x0f) == 0x0f) { return 0; }
-    // regular name 8 '.' 3 '\0'
     if ((folderEntry[11 - 32] & 0x0f) != 0x0f) {
+    // regular name 8 '.' 3 '\0'
         int length = 13; // NAME888.EXT '\0'
 
         for (int i = 10; folderEntry[i] == ' ' && i != 7; i--) { length--; }
         for (int i = 7; folderEntry[i] == ' ' && i != 0 - 1; i--) { length--; }
         if (folderEntry[8] == ' ') { length--; } // no ext - no'.'
         return length;
-    // file with long name
     } else {
+    // file with long name
         // format of Long File Name etries is described in fat12__getItemName
         int length = 1;
 
@@ -224,8 +224,8 @@ static void fat12__getItemName(void *_folderEntry, void *_name) {
 }
 
 
-static int fat12__handleFolderEntry(Fat12 *this, int folderEntryOffset, String *name,
-                                    ItemEnumCallback callback, void *callbackParam) {
+static int fat12__forEachFile_handleFolderEntry(Fat12 *this, int folderEntryOffset, String *name,
+                                    ForEachCallback callback, void *callbackParam) {
     int nameSize = 0;
 
     if (this->image[folderEntryOffset] == 0) { return 1; } // zero-entry, not file nor folder
@@ -245,7 +245,7 @@ static int fat12__handleFolderEntry(Fat12 *this, int folderEntryOffset, String *
             // handle folder only if it isn't current folder or parent one
             if (memcmp(&this->image[folderEntryOffset], ".          ", 11) &&
                 memcmp(&this->image[folderEntryOffset], "..         ", 11)) {
-                if (!fat12__handleFolder(this, get16(this->image, folderEntryOffset + 26), name, callback, callbackParam)) {
+                if (!fat12__forEachFile_handleFolder(this, get16(this->image, folderEntryOffset + 26), name, callback, callbackParam)) {
                     return 0;
                 }
             }
@@ -270,13 +270,13 @@ static int fat12__handleFolderEntry(Fat12 *this, int folderEntryOffset, String *
     return 1;
 }
 
-static int fat12__handleFolder(Fat12 *this, int claster, String *name,
-                               ItemEnumCallback callback, void *callbackParam) {
+static int fat12__forEachFile_handleFolder(Fat12 *this, int claster, String *name,
+                               ForEachCallback callback, void *callbackParam) {
     for (; claster < 0xff7; claster = fat12__getNextClaster(this, claster)) {
         int offset = fat12__getOffsetByClaster(this, claster);
 
         for (int i = 0; i < (this->bytesPerSector * this->sectorsPerClaster / 32); i++) {
-            if (!fat12__handleFolderEntry(this, offset + 32 * i, name, callback, callbackParam)) {
+            if (!fat12__forEachFile_handleFolderEntry(this, offset + 32 * i, name, callback, callbackParam)) {
                 return 0;
             }
         }
@@ -284,7 +284,7 @@ static int fat12__handleFolder(Fat12 *this, int claster, String *name,
     return 1;
 }
 
-static int fat12__handleRootFolder(Fat12 *this, ItemEnumCallback callback, void *callbackParam) {
+static int fat12__forEachFile(Fat12 *this, ForEachCallback callback, void *callbackParam) {
     String name = { 0 };
 
     name.capacity = 4096;
@@ -293,7 +293,7 @@ static int fat12__handleRootFolder(Fat12 *this, ItemEnumCallback callback, void 
     name.data[0] = '\0';
 
     for (int i = 0; i < this->maxRootEntries; i++) {
-        if (!fat12__handleFolderEntry(this, this->rootDirectory + 32 * i, &name, callback, callbackParam)) {
+        if (!fat12__forEachFile_handleFolderEntry(this, this->rootDirectory + 32 * i, &name, callback, callbackParam)) {
             free(name.data);
             return 0;
         }
@@ -410,7 +410,7 @@ int main(int argc, char **argv) {
         return handleError(&fat12); 
     }
 
-    if (!fat12__handleRootFolder(&fat12, callback, &outputFolder)) {
+    if (!fat12__forEachFile(&fat12, callback, &outputFolder)) {
         return handleError(&fat12);
     }
 
