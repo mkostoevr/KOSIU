@@ -366,6 +366,7 @@ static int callback(const char *name, size_t size, const uint8_t *data, void *pa
         char *fileNameDelim = NULL;
     
         // no slash = no folders to create, outputPath->data contains only file name
+        // yes, I know, outputPath->data always contains '/', but who knows...
         if ((fileNameDelim = strrchr(outputPath->data, '/'))) {
             *fileNameDelim = '\0';
             mkdir_p(outputPath->data);
