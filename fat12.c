@@ -305,7 +305,7 @@ static int fat12__error(Fat12 *this, char *errorMessage) {
 }
 
 static int handleError(Fat12 *fat12) {
-    printf("Error in Fat12: %s\n", fat12->errorMessage);
+    con_printf("Error in Fat12: %s\n", fat12->errorMessage);
     return -1;
 }
 
