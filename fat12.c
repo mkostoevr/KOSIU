@@ -314,7 +314,7 @@ static int handleError(Fat12 *fat12) {
 
 
 int main(int argc, char **argv) {
-    Fat12 *fat12 = malloc(sizeof(Fat12));
+    Fat12 fat12 = { 0 };
     static char *imageFile = NULL;
 
     if (con_init_console_dll()) return -1;
@@ -331,17 +331,14 @@ int main(int argc, char **argv) {
     if (argc >= 3) strcpy(outputFolder, argv[2]);
     else strcpy(outputFolder, "/TMP0/1/KOLIBRI.IMG");
 
-    if (!fat12__open(fat12, imageFile)) { 
-        free(fat12);
-        return handleError(fat12); 
+    if (!fat12__open(&fat12, imageFile)) { 
+        return handleError(&fat12); 
     }
 
-    if (!fat12__handleRootFolder(fat12)) {
-        free(fat12);
-        return handleError(fat12);
+    if (!fat12__handleRootFolder(&fat12)) {
+        return handleError(&fat12);
     }
 
-    free(fat12);
     con_write_asciiz("\nDONE!\n\n");
     con_exit(0);
 }
