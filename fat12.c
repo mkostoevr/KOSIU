@@ -21,7 +21,6 @@ typedef struct {
     int dataRegion;
 } Fat12;
 
-static char *imageFile;
 static char outputFolder[4096];
 
 // system-dependent
@@ -315,6 +314,7 @@ static int handleError(Fat12 *fat12) {
 
 int main(int argc, char **argv) {
     Fat12 *fat12 = malloc(sizeof(Fat12));
+    static char *imageFile = NULL;
 
     if (con_init_console_dll()) return -1;
     con_set_title("UnImg - kolibri.img file unpacker");
@@ -331,10 +331,12 @@ int main(int argc, char **argv) {
     else strcpy(outputFolder, "/TMP0/1/KOLIBRI.IMG");
 
     if (!fat12__open(fat12, imageFile)) { 
+        free(fat12);
         return handleError(fat12); 
     }
 
     if (!fat12__handleRootFolder(fat12)) {
+        free(fat12);
         return handleError(fat12);
     }
 
