@@ -388,12 +388,14 @@ int main(int argc, char **argv) {
     Fat12 fat12 = { 0 };
     char *imageFile = NULL;
     String outputFolder = { 0 };
+    int exit = 0;
 
     if (con_init_console_dll()) return -1;
     con_set_title("UnImg - kolibri.img file unpacker");
 
     if (argc < 2) { 
-        con_write_asciiz("Usage: unimg \"/path/to/kolibri.img\" \"/optional/extract/path\""); 
+        con_write_asciiz("Usage: unimg \"/path/to/kolibri.img\" \"/optional/extract/path\" [-e]");
+        con_write_asciiz("-e\tExit on success");
         con_exit(0);
         return -1;
     }
@@ -404,10 +406,13 @@ int main(int argc, char **argv) {
     outputFolder.data = malloc(outputFolder.capacity);
 
     //! ACHTUNG: possible buffer overflow, is 4096 enough in KolibriOS?
-    if (argc >= 3) strcpy(outputFolder.data, argv[2]);
+    if (argc >= 3 && argv[2][0] != '-') strcpy(outputFolder.data, argv[2]);
     else strcpy(outputFolder.data, "/TMP0/1/KOLIBRI.IMG");
-    
+
     outputFolder.length = strlen(outputFolder.data);
+
+    // handle -e parameter - exit on success
+    if (argc >= 3 && !strcmp(argv[argc - 1], "-e")) { exit = 1; }
 
     if (!fat12__open(&fat12, imageFile)) { 
         return handleError(&fat12); 
@@ -418,5 +423,5 @@ int main(int argc, char **argv) {
     }
 
     con_write_asciiz("\nDONE!\n\n");
-    con_exit(0);
+    con_exit(exit);
 }
